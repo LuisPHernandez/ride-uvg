@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 
 from sqlalchemy import (
     DateTime,
+    Date,
+    Time,
     Enum as SAEnum,
     ForeignKey,
     Integer,
@@ -57,7 +59,7 @@ class Driver(Base):
     # Route info (for simplicity, we assume a single route per driver)
     route_start_lat: Mapped[float] = mapped_column(Numeric(9, 6))
     route_start_lng: Mapped[float] = mapped_column(Numeric(9, 6))
-    route_public: Mapped[str] = mapped_column(Text) # encoded polyline
+    route_polyline: Mapped[str] = mapped_column(Text, nullable=True) # encoded polyline
 
     # Account info
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -67,7 +69,28 @@ class Driver(Base):
     vehicles: Mapped[list["Vehicle"]] = relationship(back_populates="driver", cascade="all, delete-orphan")
     rides: Mapped[list["Ride"]] = relationship(back_populates="driver", cascade="all, delete-orphan")
     reports: Mapped[list["Report"]] = relationship(back_populates="driver", cascade="all, delete-orphan")
+    schedules: Mapped[list["DriverSchedule"]] = relationship(back_populates="driver", cascade="all, delete-orphan")
 
+class DriverSchedule(Base):
+    __tablename__ = "driver_schedule"
+    __table_args__ = (
+        UniqueConstraint("driver_id", "day_of_week", "arrive_by_time", name="uq_driver_schedule_slot"),
+        CheckConstraint("day_of_week >= 0 AND day_of_week <= 6", name="ck_day_of_week"),
+    )
+
+    # Schedule info
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("driver.id", ondelete="CASCADE"), index=True)
+    vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicle.id", ondelete="RESTRICT"), index=True)
+    day_of_week: Mapped[int] = mapped_column(Integer)  # 0=Mon ... 6=Sun
+    arrive_by_time: Mapped[datetime.time] = mapped_column(Time)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Relationships
+    driver: Mapped["Driver"] = relationship(back_populates="schedules")
+    rides: Mapped[list["Ride"]] = relationship(back_populates="schedule")
+    vehicle: Mapped["Vehicle"] = relationship(back_populates="schedules")
 
 class Rider(Base):
     __tablename__ = "rider"
@@ -106,6 +129,7 @@ class Vehicle(Base):
     # Relationships
     driver: Mapped["Driver"] = relationship(back_populates="vehicles")
     rides: Mapped[list["Ride"]] = relationship(back_populates="vehicle")
+    schedules: Mapped[list["DriverSchedule"]] = relationship(back_populates="vehicle")
 
 
 class Ride(Base):
@@ -113,13 +137,16 @@ class Ride(Base):
     __table_args__ = (
         CheckConstraint("seats_available >= 0", name="ck_ride_seats_available_nonneg"),
         CheckConstraint("cost >= 0", name="ck_ride_cost_nonneg"),
+        UniqueConstraint("schedule_id", "service_date", name="uq_ride_schedule_id")
     )
 
     # Ride info
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     driver_id: Mapped[int] = mapped_column(ForeignKey("driver.id", ondelete="CASCADE"), index=True)
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicle.id", ondelete="RESTRICT"), index=True)
-    departure_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    schedule_id: Mapped[int | None] = mapped_column(ForeignKey("driver_schedule.id", ondelete="SET NULL"), index=True, nullable=True)
+    service_date: Mapped[date] = mapped_column(Date)
+    arrive_by_time: Mapped[datetime.time] = mapped_column(Time)
     status: Mapped[RideStatus] = mapped_column(SAEnum(RideStatus), default=RideStatus.scheduled)
     seats_available: Mapped[int] = mapped_column(Integer)
     cost: Mapped[float] = mapped_column(Numeric(10, 2))
@@ -130,7 +157,7 @@ class Ride(Base):
     vehicle: Mapped["Vehicle"] = relationship(back_populates="rides")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="ride", cascade="all, delete-orphan")
     reports: Mapped[list["Report"]] = relationship(back_populates="ride", cascade="all, delete-orphan")
-
+    schedule: Mapped["DriverSchedule"] = relationship(back_populates="rides")
 
 class Booking(Base):
     __tablename__ = "booking"
